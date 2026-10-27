@@ -1,0 +1,12 @@
+[Unit]
+Description=Autostart UmbrelOS installation to eMMC
+DefaultDependencies=no
+After=systemd-udevd.service local-fs.target
+
+[Service]
+Type=idle
+ExecStart=-/usr/bin/umbrel-flash
+StandardOutput=journal+console
+
+[Install]
+WantedBy=basic.target

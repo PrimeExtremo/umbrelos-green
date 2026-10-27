@@ -1,0 +1,69 @@
+#!/bin/ash
+# shellcheck shell=dash
+#
+# Writes the UmbrelOS image from a fixed region of the SD card to the Green's
+# internal eMMC (mmcblk0). Replaces Nabu Casa's haos-flash, which downloads
+# Home Assistant OS instead.
+#
+# The UmbrelOS image sits on the SD card at UMBREL_SD_OFFSET_MIB, after
+# the installer partitions, and is UMBREL_IMAGE_MIB long.
+#
+# Progress and results go to the console and the autostart journal. The blink
+# pattern is the same as haos-flash so the status light means the same thing.
+
+set -e
+set -o pipefail
+
+SD_DEV=/dev/mmcblk1
+EMMC_DEV=/dev/mmcblk0
+UMBREL_SD_OFFSET_MIB=1024                 # 1 GiB into the card
+UMBREL_IMAGE_MIB=7179                    # 7527727104 bytes, same as the SD image
+UMBREL_IMAGE_SHA256=447ec4c8576773e7ca6b17b8c03dcd281ab43de0e5b4efc2bf318566f683eb04
+
+# Abort if already running
+if pidof dd
+then
+	echo "dd already running, aborting..."
+	exit 1
+fi
+
+if [ ! -b "$SD_DEV" ] || [ ! -b "$EMMC_DEV" ]
+then
+	echo "SD or eMMC device missing, exiting."
+	echo none > /sys/class/leds/user/trigger
+	exit 1
+fi
+
+echo "UmbrelOS: checking image on SD region..."
+echo timer > /sys/class/leds/user/trigger
+echo 100 > /sys/class/leds/user/delay_on
+echo 100 > /sys/class/leds/user/delay_off
+
+sd_sha="$(dd if="$SD_DEV" bs=1M skip="$UMBREL_SD_OFFSET_MIB" count="$UMBREL_IMAGE_MIB" 2>/dev/null | sha256sum | cut -d' ' -f1)"
+if [ "$sd_sha" != "$UMBREL_IMAGE_SHA256" ]
+then
+	echo "UmbrelOS image on SD does not match expected hash ($sd_sha)."
+	echo none > /sys/class/leds/user/trigger
+	exit 1
+fi
+echo "SD image verified, writing to eMMC..."
+
+if dd if="$SD_DEV" bs=1M skip="$UMBREL_SD_OFFSET_MIB" count="$UMBREL_IMAGE_MIB" 2>/dev/null \
+	| dd of="$EMMC_DEV" bs=1M conv=fsync
+then
+	echo "Verifying eMMC..."
+	emmc_sha="$(dd if="$EMMC_DEV" bs=1M count="$UMBREL_IMAGE_MIB" 2>/dev/null | sha256sum | cut -d' ' -f1)"
+	if [ "$emmc_sha" = "$UMBREL_IMAGE_SHA256" ]
+	then
+		echo "UmbrelOS written and verified, shutting down the system"
+		echo default-on > /sys/class/leds/user/trigger
+		poweroff
+		exit 0
+	else
+		echo "eMMC verification failed ($emmc_sha)."
+	fi
+else
+	echo "Error writing UmbrelOS to eMMC."
+fi
+echo none > /sys/class/leds/user/trigger
+exit 1
